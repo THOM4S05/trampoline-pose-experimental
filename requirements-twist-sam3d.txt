@@ -1,0 +1,20 @@
+# Optional inference environment only. Do not install into the tracker .venv.
+# CUDA 11.8 retains support for older GPUs; verify the actual device at runtime.
+--extra-index-url https://download.pytorch.org/whl/cu118
+torch==2.7.1+cu118
+torchvision==0.22.1+cu118
+numpy==1.26.4
+scipy==1.11.4
+opencv-python==4.9.0.80
+av==12.3.0
+PyYAML==6.0.2
+jsonschema==4.23.0
+psutil==6.1.1
+pytorch-lightning==2.5.2
+torchmetrics==1.7.4
+timm==1.0.22
+roma==1.5.4
+yacs==0.1.8
+omegaconf==2.3.0
+einops==0.8.1
+braceexpand==0.1.7

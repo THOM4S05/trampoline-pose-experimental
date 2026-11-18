@@ -99,6 +99,19 @@ def test_short_inversion_gap_has_unique_direction_supported_arc(sign, facing, di
     assert rotation_evidence(t, shoulder, hip, facing, .08, False)['somersault_count'] is None
 
 
+def test_short_pike_occlusion_at_45_degree_torso_tilt_can_recover_rotation():
+    t = np.arange(0, 1.601, .01)
+    theta = -t / 1.6 * 2 * np.pi
+    hip = np.zeros((len(t), 2))
+    shoulder = np.column_stack([100 * np.sin(theta), -100 * np.cos(theta)])
+    shoulder[(t > .22) & (t < .31)] = np.nan
+    result = rotation_evidence(t, shoulder, hip, 1, .08, False)
+    assert result['somersault_quarters'] == 4
+    assert result['direction'] == 'backward'
+    assert len(result['reconstructed_inversion_gaps']) == 1
+    assert 'inversion_gap_arc_estimated_needs_review' in result['reasons']
+
+
 def test_inversion_gap_with_reversing_departure_is_not_reconstructed():
     t = np.arange(0, 1.201, .01)
     theta = t / 1.2 * 2 * np.pi

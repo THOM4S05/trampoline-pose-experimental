@@ -1,5 +1,6 @@
 import copy
 import numpy as np
+import trampoline_pose.tracking as tracking
 from trampoline_pose.tracking import associate
 from trampoline_pose.types import TrackerConfig,AthleteSelection
 from trampoline_pose.refinement import interpolate_short_gaps
@@ -9,6 +10,35 @@ HIST=[1.]+[0.]*63
 
 def record(t,boxes,cut=False):
     return dict(timestamp_seconds=t,boxes=boxes,scores=[.9]*len(boxes),appearances=[HIST]*len(boxes),scene_cut=cut)
+
+
+def test_bounded_loss_uses_only_confirmed_reverse_athlete_path(monkeypatch):
+    box = [0, 0, 20, 60]
+    rows = [record(i * .1, [box]) for i in range(10)]
+    forward = [dict(bbox_xyxy=box if i < 2 or i >= 7 else None,
+                    track_state='tracked' if i < 2 or i >= 7 else 'lost',
+                    diagnostics=dict(reason='forward')) for i in range(10)]
+    reverse = [dict(bbox_xyxy=box, track_state='tracked',
+                    diagnostics=dict(reason='reverse')) for _ in range(8)]
+
+    def pass_stub(records, selection, config, seed_appearance):
+        return copy.deepcopy(forward if selection.frame_index == 0 else reverse)
+
+    monkeypatch.setattr(tracking, '_associate_pass', pass_stub)
+    result = associate(rows, AthleteSelection(0, tuple(box)), TrackerConfig(), HIST)
+    assert all(result[i]['diagnostics']['reason'] == 'bidirectional_recovered_after_occlusion'
+               for i in range(2, 7))
+    assert result[1]['diagnostics']['reason'] == 'forward'
+
+    # A broken reverse path must not turn missing observations into tracked ones.
+    reverse[3]['track_state'] = 'lost'
+    result = associate(rows, AthleteSelection(0, tuple(box)), TrackerConfig(), HIST)
+    assert all(result[i]['track_state'] == 'lost' for i in range(2, 7))
+
+    reverse[3]['track_state'] = 'tracked'
+    rows[7]['appearances'] = [[0., 1.] + [0.] * 62]
+    result = associate(rows, AthleteSelection(0, tuple(box)), TrackerConfig(), HIST)
+    assert all(result[i]['track_state'] == 'lost' for i in range(2, 7))
 
 def test_mid_clip_seed_bidirectional_identity_with_neighbor():
     rows=[record(i*.04,[[i*2,0,i*2+20,60],[200,0,240,60]]) for i in range(7)]

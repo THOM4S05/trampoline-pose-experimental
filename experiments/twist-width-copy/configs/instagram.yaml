@@ -1,0 +1,10 @@
+# Experimental retry profile for low-confidence, distant or inverted athletes.
+# Verify identity on the overlay; this is not inferred from an MP4 extension.
+model_directory: ../../../models
+device: cuda:0
+detection_score: 0.15
+detector_rotations: [0, 90, 180, 270]
+joint_score: 0.3
+late_reacquisition_appearance: 0.55
+reacquisition_distance: 3.0
+reacquisition_cost: 1.8

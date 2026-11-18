@@ -36,6 +36,16 @@ def test_vfr_round_trip_native_timestamps(tmp_path):
     frames=list(decode(path))
     assert len(frames)==4
     np.testing.assert_allclose([record['timestamp_seconds'] for record,_ in frames],expected,atol=1/90000)
+    # A browser can read the playback index before downloading the media payload.
+    data = path.read_bytes()
+    boxes = []
+    offset = 0
+    while offset < len(data):
+        size = int.from_bytes(data[offset:offset+4], 'big')
+        boxes.append(data[offset+4:offset+8])
+        assert size >= 8
+        offset += size
+    assert boxes.index(b'moov') < boxes.index(b'mdat')
 
 def test_rotated_video_applies_orientation_once(tmp_path):
     source=tmp_path/'source.mp4'

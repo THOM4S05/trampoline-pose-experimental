@@ -5,6 +5,7 @@
   <title>Flightroom · Video inbox</title>
   <link rel="stylesheet" href="/assets/style.css">
   <link rel="stylesheet" href="/assets/skills.css">
+  <script src="/assets/video-player.js" defer></script>
   <script src="/assets/skills.js" defer></script>
   <script src="/assets/app.js" defer></script>
 </head>
@@ -22,7 +23,11 @@
       <div class="layout">
         <aside>
           <section class="panel upload-panel"><div class="section-label"><span>01</span> UPLOAD VIDEO</div><h2>Upload a video</h2><p>Choose the original video file.<br>Maximum size: 2 GiB.</p>
-            <label class="drop-zone" id="drop-zone"><span class="upload-symbol">↑</span><strong>Choose a video</strong><span>or drop it here</span><input id="file-input" type="file" accept="video/*,.mkv,.avi"></label>
+            <label class="video-name-label" for="upload-name">Video name (optional)</label><input id="upload-name" class="video-name-input" type="text" maxlength="240" placeholder="e.g. Sunday training" aria-describedby="upload-name-help"><p id="upload-name-help" class="small">You can also name or rename it after uploading.</p>
+            <label class="drop-zone" id="drop-zone"><span class="upload-symbol">↑</span><strong>Choose a video</strong><span>or drop it here</span><input id="file-input" type="file" accept="video/*" aria-describedby="picker-help"></label>
+            <p id="picker-help" class="small">In your photo library, select one video, then tap Add, Done or Choose to return here. The upload starts automatically when the video is ready.</p>
+            <label class="secondary file-picker">Choose from files instead<input id="files-input" type="file" aria-label="Choose a video from files" aria-describedby="files-help"></label>
+            <p id="files-help" class="small">Photo library stuck? Save the video to Files or Downloads, then choose it here. MP4, MOV, M4V, MKV, AVI and WebM supported. Maximum size: 2 GiB.</p>
             <div id="upload-progress" hidden><progress id="upload-bar" max="100" value="0"></progress><p id="upload-message" class="small" aria-live="polite"></p></div>
             <p class="small">Keep this page open until the upload finishes. Then select the gymnast to track.</p>
           </section>
@@ -32,6 +37,7 @@
           <div id="empty-editor"><div class="empty-art"><span>↗</span></div><span class="eyebrow">GET STARTED</span><h2>Upload a video to begin</h2><p>Use Choose a video or drop a file in the upload area.<br>Then choose a frame and draw a box around the gymnast.</p><div class="flow"><span>Upload</span><b>→</b><span>Select gymnast</span><b>→</b><span>Track</span></div></div>
           <div id="job-editor" hidden>
             <div class="editor-heading"><div><div class="section-label"><span>02</span> SELECT GYMNAST</div><h2 id="video-name"></h2></div><span class="pill" id="job-state"></span></div>
+            <form id="video-name-form" class="video-name-form"><label class="video-name-label" for="edit-video-name">Video name</label><div class="video-name-controls"><input id="edit-video-name" class="video-name-input" type="text" maxlength="240" placeholder="Add a name" aria-describedby="video-filename"><button id="save-video-name" class="secondary" type="submit">Save name</button></div><p id="video-filename" class="small"></p></form>
             <div id="job-status" class="status" aria-live="polite"></div><progress id="job-progress" hidden></progress>
             <div id="resume-panel" hidden><p>This upload has not finished. Choose the same file again to retry from the beginning, or delete this entry.</p></div>
             <button id="retry-prepare" class="secondary" hidden>Retry preparing frames</button>
@@ -40,13 +46,27 @@
               <p class="hint">Use the slider or frame buttons to find a frame with the whole gymnast visible and separate from other people.</p>
               <div class="canvas-shell"><canvas id="frame-canvas" aria-label="Selected frame. Drag a box around the gymnast; drag its corners to resize." tabindex="0"></canvas><div id="frame-loading" hidden>Loading frame…</div></div>
               <input id="frame-slider" type="range" min="0" max="0" value="0" step="1" aria-label="Choose a frame">
+              <progress id="frame-buffer" max="1" value="0" aria-label="Buffered video frames"></progress>
+              <p id="frame-buffer-status" class="small" aria-live="polite"></p>
               <div class="frame-controls"><button id="previous-frame" class="secondary" aria-label="Previous frame">← <span>Previous</span></button><label>Frame <input id="frame-number" type="number" min="1" value="1" aria-label="Frame number"> <span id="frame-total"></span></label><button id="next-frame" class="secondary" aria-label="Next frame"><span>Next</span> →</button></div>
               <div class="box-heading"><div><h3>2. Draw a box around the gymnast</h3><p class="hint">Include the whole body, hands, and feet. Drag inside the box to move it or drag a corner to resize.</p></div><button id="clear-box" class="quiet">Clear box</button></div>
               <div class="box-tools"><button id="corner-mode" class="secondary" aria-pressed="false">Tap two corners instead</button><span id="box-status" class="small" aria-live="polite">No box selected</span></div>
               <details id="coordinate-details"><summary>Edit box coordinates (pixels)</summary><div class="coordinates"><label>Left<input id="box-x1" type="number" min="0"></label><label>Top<input id="box-y1" type="number" min="0"></label><label>Right<input id="box-x2" type="number" min="0"></label><label>Bottom<input id="box-y2" type="number" min="0"></label></div><button id="apply-box" class="secondary">Apply coordinates</button></details>
               <div class="selection-footer"><p class="small">Select Start tracking to track this gymnast throughout the video, before and after the selected frame.</p><button id="start-processing" class="primary" disabled>Start tracking <span>↗</span></button></div>
             </div>
-            <div id="results-panel" hidden><h3>Review the tracking</h3><p class="hint">Play the video and check that the skeleton follows the selected gymnast throughout. Check for errors when the body is hidden or the pose changes.</p><video id="result-video" controls playsinline preload="metadata"></video><div class="downloads"><a id="download-video" class="primary">Download tracking video</a><a id="download-json" class="secondary">Download joints (JSON)</a><a id="download-csv" class="secondary">Download joints (CSV)</a></div>
+            <div id="results-panel" hidden><h3>Review the tracking</h3><p class="hint">Play the video and check that the skeleton follows the selected gymnast throughout. Check for errors when the body is hidden or the pose changes.</p><div id="video-player" class="video-player"><video id="result-video" controls playsinline preload="auto"></video>
+              <div id="video-controls" class="video-controls" hidden>
+                <button id="video-play" type="button" aria-label="Play video">▶</button>
+                <span id="video-time" class="video-time">0:00 / 0:00</span>
+                <div class="video-seek-track">
+                  <input id="skill-seek" type="range" min="0" max="1" step="0.001" value="0" aria-label="Seek video">
+                  <div id="skill-markers" class="skill-markers" aria-hidden="true"></div>
+                </div>
+                <select id="video-speed" aria-label="Playback speed"><option value="1">1×</option><option value="0.75">0.75×</option><option value="0.5">0.5×</option><option value="0.25">0.25×</option><option value="0.1">0.1×</option></select>
+                <button id="video-mute" type="button" aria-label="Mute video">Mute</button>
+                <button id="video-fullscreen" type="button" aria-label="Enter fullscreen">⛶</button>
+              </div>
+            </div><div class="video-skill-actions"><button id="jump-current-tightest" class="primary" type="button" disabled>Jump to tightest point</button><div class="video-frame-buttons"><button id="video-prev-frame" class="secondary" type="button" aria-label="Previous frame" title="Previous frame · Left Arrow">−1 frame</button><button id="video-next-frame" class="secondary" type="button" aria-label="Next frame" title="Next frame · Right Arrow">+1 frame</button><span id="video-frame-status" class="small" aria-live="polite">Frame —</span></div><span id="current-skill-label" class="small" aria-live="polite"></span></div><div class="downloads"><a id="download-video" class="primary">Download tracking video</a><a id="download-json" class="secondary">Download joints (JSON)</a><a id="download-csv" class="secondary">Download joints (CSV)</a></div>
               <section id="embedded-skills" class="skill-main embedded-skills" aria-label="Skill analysis">
                 <div id="analysis-panel" hidden>
                   <div class="editor-heading"><h2>Skill analysis</h2><span id="analysis-state" class="pill"></span></div>

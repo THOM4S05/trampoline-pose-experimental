@@ -1,6 +1,7 @@
 .venv/
 .tools/
 models/checkpoints/
+models/sam-3d-body/
 models/*-configs/
 models/upstream-index.json
 models/*-upstream.yml
@@ -25,6 +26,7 @@ reports/
 backups/
 skill-identification-handover/
 wifi-reconnect/
+local-controls/
 PLAN.md
 skills.csv
 *.m4v
@@ -48,3 +50,7 @@ Thumbs.db
 htmlcov/
 dist/
 build/
+
+# Generated shared video collections; publish only from a separate repository.
+/artifacts/shared-viewer*/
+/artifacts/shared-public/

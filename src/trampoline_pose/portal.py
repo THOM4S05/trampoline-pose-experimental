@@ -65,6 +65,12 @@ def integer(value, name, minimum=0):
     return value
 
 
+def video_label(value):
+    if not isinstance(value, str) or len(value) > 240:
+        raise ValueError('Video name must be text of at most 240 characters')
+    return value.strip()
+
+
 def align_reference(reference, skills):
     """Match saved reference time spans without feeding labels to analysis."""
     rows = []
@@ -136,6 +142,7 @@ class JobStore:
         # Display name is never used as a filesystem path.
         name = name.replace('\\', '/').rsplit('/', 1)[-1]
         extension = Path(name).suffix.lower()
+        display_name = video_label(data.get('display_name', ''))
         if extension not in {'.mp4', '.mov', '.m4v', '.mkv', '.avi', '.webm'}:
             raise ValueError('Choose an MP4, MOV, M4V, MKV, AVI or WebM video')
         with self.lock:
@@ -144,7 +151,7 @@ class JobStore:
             reserved = sum(j['size'] - self.offset(j) for j in self.jobs.values() if j['state'] == 'uploading')
             if shutil.disk_usage(self.root).free < reserved + size + 2 * 1024**3:
                 raise StorageFull('Not enough free disk space; keep at least 2 GiB free')
-            job = dict(id=uuid.uuid4().hex, name=name, extension=extension, size=size,
+            job = dict(id=uuid.uuid4().hex, name=name, display_name=display_name, extension=extension, size=size,
                        created_at=now(), state='uploading', message='Waiting for upload',
                        frame_count=0, selection=None, progress=None)
             self.directory(job).mkdir()
@@ -169,6 +176,8 @@ class JobStore:
                 raise ValueError('Video resolution exceeds the supported 8K limit')
             frames = self.directory(job) / 'frames'
             frames.mkdir(exist_ok=True)
+            self.update(job, preparation_complete=False, width=meta['display_width'],
+                        height=meta['display_height'], expected_frame_count=meta['declared_frame_count'])
             timestamps = []
             for timing, image in decode(self.source(job), meta, max_frames=MAX_FRAMES + 1):
                 i = timing['frame_index']
@@ -182,14 +191,16 @@ class JobStore:
                     raise ValueError('Unable to save preview frame')
                 timestamps.append(timing['timestamp_seconds'])
                 if i % 30 == 0:
-                    self.update(job, progress=dict(stage='Preparing frames', completed=i+1, total=meta['declared_frame_count']))
+                    with self.lock:
+                        atomic_json(self.directory(job) / 'frames.json', timestamps)
+                        self.update(job, frame_count=len(timestamps), progress=dict(stage='Preparing frames', completed=i+1, total=meta['declared_frame_count']))
             if not timestamps:
                 raise ValueError('Video decoded no frames')
             atomic_json(self.directory(job) / 'frames.json', timestamps)
             # Do not send server source paths to the browser.
             self.update(job, state='ready', message='Choose a clear frame, draw a box around the gymnast, then select Start tracking.',
                         frame_count=len(timestamps), width=meta['display_width'], height=meta['display_height'],
-                        duration=timestamps[-1], progress=None)
+                        duration=timestamps[-1], progress=None, preparation_complete=True)
         except Exception as exc:
             self.fail(job, exc, 'Could not prepare this video')
 
@@ -244,14 +255,20 @@ class JobStore:
             source = self.directory(job) / 'joints.json'
             data = json.loads(source.read_text(encoding='utf-8'))
             result = analyze(data)
+            self.update(job, analysis=dict(state='running', message='Detecting contact with the trampoline bed'))
+            from .bed_contact import add_bed_contact_times
+            add_bed_contact_times(data, result, self.source(job), self.directory(job) / 'bed-motion.json')
             self.update(job, analysis=dict(state='running', message='Creating body shape previews'))
             from .skill_images import save_shape_images
             images = save_shape_images(data, result, self.source(job), self.directory(job) / 'skill-images')
             rows = [{k: s[k] for k in ('skill_index', 'start_frame', 'end_frame', 'start_seconds',
                                        'end_seconds', 'start_clipped', 'end_clipped',
-                                       'supplied_skill_identity', 'predicted_skill_identity', 'review_status')}
+                                       'supplied_skill_identity', 'predicted_skill_identity', 'review_status',
+                                       'time_of_flight_seconds', 'time_of_flight', 'landing_contact')}
                     | {'rotation_' + k if k == 'reasons' else k: v for k, v in s['rotation'].items()}
                     | {'shape_' + k if k == 'reasons' else k: v for k, v in s['execution'].items()}
+                    | {'difficulty_value': s['difficulty']['value'], 'difficulty_status': s['difficulty']['status'],
+                       'difficulty_breakdown': s['difficulty']['components'], 'difficulty_reasons': s['difficulty']['reasons']}
                     for s in result['skills']]
             directory = self.directory(job)
             json_tmp = directory / 'skills.pending.json'
@@ -262,7 +279,7 @@ class JobStore:
             csv_tmp.replace(directory / 'skills.csv')
             atomic_json(directory / 'skill-images.json', images)
             self.update(job, analysis=dict(state='done', message='Skill estimates ready for review',
-                                           skill_count=len(result['skills']), images_version=2, analysis_version=10))
+                                           skill_count=len(result['skills']), images_version=2, analysis_version=11))
         except Exception as exc:
             LOG.exception('Skill analysis stopped: %s', job['id'])
             detail = str(exc) if isinstance(exc, (ValueError, KeyError, TypeError)) else 'See the portal log on the processing PC.'
@@ -313,7 +330,14 @@ def create_app(root, config=None, public_url=None, port=8765, tracker_factory=No
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['X-Frame-Options'] = 'DENY'
         response.headers['Referrer-Policy'] = 'no-referrer'
-        response.headers['Cache-Control'] = 'no-store'
+        if (request.endpoint == 'result_file' and
+                (request.view_args or {}).get('filename') == 'overlay.mp4' and
+                response.status_code in {200, 206, 304}):
+            # Retain downloaded ranges privately, but recheck authentication and
+            # file validators before reuse (including after logout/deletion).
+            response.headers['Cache-Control'] = 'private, no-cache'
+        else:
+            response.headers['Cache-Control'] = 'no-store'
         return response
 
     @app.errorhandler(HTTPException)
@@ -376,9 +400,18 @@ def create_app(root, config=None, public_url=None, port=8765, tracker_factory=No
         with store.lock:
             job = store.get(job_id)
             data = store.summary(job)
-            if job['frame_count']:
+            if job['frame_count'] and request.args.get('frames') != '0':
                 data['timestamps'] = json.loads((store.directory(job) / 'frames.json').read_text(encoding='utf-8'))
             return jsonify(data)
+
+    @app.patch('/api/jobs/<job_id>')
+    def rename_job(job_id):
+        data = body()
+        display_name = video_label(data.get('display_name'))
+        with store.lock:
+            job = store.get(job_id)
+            store.update(job, display_name=display_name)
+            return jsonify(store.summary(job))
 
     @app.put('/api/jobs/<job_id>/upload')
     def upload(job_id):
@@ -428,9 +461,9 @@ def create_app(root, config=None, public_url=None, port=8765, tracker_factory=No
     def retry_prepare(job_id):
         with store.lock:
             job = store.get(job_id)
-            if job['state'] != 'error' or job['frame_count'] or not store.source(job).exists():
+            if job['state'] != 'error' or (job['frame_count'] and job.get('preparation_complete') is not False) or not store.source(job).exists():
                 abort(409, 'This video cannot be prepared again')
-            store.update(job, state='preparing', message='Preparing the frame slider')
+            store.update(job, state='preparing', frame_count=0, message='Preparing the frame slider')
             store.worker.submit(store.prepare, job)
             return jsonify(store.summary(job)), 202
 
@@ -456,6 +489,8 @@ def create_app(root, config=None, public_url=None, port=8765, tracker_factory=No
     def run(job_id):
         with store.lock:
             job = store.get(job_id)
+            if job.get('preparation_complete') is False:
+                abort(409, 'Wait for the video buffer to finish before tracking')
             if job['state'] not in {'ready', 'error'}:
                 abort(409, 'Video is already queued, processing or finished')
             selection = store.selection(job, body())
@@ -483,7 +518,7 @@ def create_app(root, config=None, public_url=None, port=8765, tracker_factory=No
             redo = body().get('redo', False) if request.is_json else False
             if not isinstance(redo, bool):
                 abort(400, 'redo must be true or false')
-            if previous.get('state') in {'queued', 'running'} or (not redo and previous.get('state') == 'done' and previous.get('images_version', 0) >= 2 and previous.get('analysis_version', 0) >= 9):
+            if previous.get('state') in {'queued', 'running'} or (not redo and previous.get('state') == 'done' and previous.get('images_version', 0) >= 2 and previous.get('analysis_version', 0) >= 11):
                 abort(409, 'Skill analysis is already queued or complete')
             store.update(job, analysis=dict(state='queued', message='Waiting for the processing PC'))
             store.worker.submit(store.analyze_skills, job)
@@ -497,6 +532,8 @@ def create_app(root, config=None, public_url=None, port=8765, tracker_factory=No
             if status['state'] != 'done':
                 return jsonify(analysis=status)
             result = json.loads((store.directory(job) / 'skills.json').read_text(encoding='utf-8'))
+            from .difficulty import attach_difficulty
+            attach_difficulty(result)
             image_path = store.directory(job) / 'skill-images.json'
             images = json.loads(image_path.read_text(encoding='utf-8')) if image_path.is_file() else {}
             reference_path = store.directory(job) / 'skill-reference.json'

@@ -2,6 +2,7 @@
 import cv2
 import numpy as np
 from .geometry import iou
+from .types import AthleteSelection
 
 def appearance(image,box):
     h,w=image.shape[:2]
@@ -22,7 +23,7 @@ def center(box):
     box=np.asarray(box,dtype=float)
     return (box[:2]+box[2:])/2
 
-def associate(records,selection,config,seed_appearance):
+def _associate_pass(records,selection,config,seed_appearance):
     n=len(records)
     if selection.frame_index>=n:
         raise ValueError(f'Seed frame {selection.frame_index} exceeds decoded frame count {n}')
@@ -149,4 +150,78 @@ def associate(records,selection,config,seed_appearance):
                                            reacquisition_confirmation_count=pending_count,
                                            possible_identity_ambiguity=ambiguous,direction='forward' if direction==1 else 'backward'))
             last_time=t
+    return output
+
+
+def associate(records, selection, config, seed_appearance):
+    """Associate from the chosen seed, then validate bounded losses backwards.
+
+    A later confirmed view can recover a flight that was missed on the forward
+    pass. The reverse path must be uninterrupted and agree with the original
+    athlete on both sides; otherwise missing frames stay missing.
+    """
+    output = _associate_pass(records, selection, config, seed_appearance)
+    if not config.automatic_reacquisition:
+        return output
+    n = len(records)
+    i = 0
+    while i < n:
+        if output[i]['track_state'] != 'lost':
+            i += 1
+            continue
+        start = i
+        while i < n and output[i]['track_state'] == 'lost':
+            i += 1
+        end = i
+        if (end == n or end - start < 5
+                or records[end]['timestamp_seconds'] - records[start]['timestamp_seconds'] > 2):
+            continue
+        # The future anchor must itself survive the normal confirmation rule.
+        if any(j >= n or output[j]['track_state'] != 'tracked'
+               for j in range(end, end + config.late_reacquisition_confirmations)):
+            continue
+        anchor = np.asarray(output[end]['bbox_xyxy'], dtype=float)
+        choices = [(iou(anchor, candidate), k) for k, candidate in enumerate(records[end]['boxes'])]
+        overlap, k = max(choices, default=(0, -1))
+        if overlap < .8:
+            continue
+        hist = np.asarray(records[end]['appearances'][k], dtype=np.float32)
+        if cv2.compareHist(np.asarray(seed_appearance, dtype=np.float32), hist,
+                           cv2.HISTCMP_BHATTACHARYYA) > config.late_reacquisition_appearance:
+            continue
+        left = start - 1
+        while left >= 0 and records[start]['timestamp_seconds'] - records[left]['timestamp_seconds'] <= .6:
+            left -= 1
+        left += 1
+        if left >= start:
+            continue
+        sub = records[left:end+1]
+        reverse_seed = AthleteSelection(end-left, tuple(anchor), selection.flight_region_xyxy)
+        reverse = _associate_pass(sub, reverse_seed, config, hist)
+        if any(reverse[j-left]['track_state'] != 'tracked' for j in range(start, end)):
+            continue
+        agreed = False
+        for j in range(start-1, left-1, -1):
+            if output[j]['track_state'] != 'tracked' or reverse[j-left]['track_state'] != 'tracked':
+                continue
+            if iou(output[j]['bbox_xyxy'], reverse[j-left]['bbox_xyxy']) < .5:
+                continue
+            candidate = np.asarray(reverse[j-left]['bbox_xyxy'], dtype=float)
+            matches = [(iou(candidate, box), k) for k, box in enumerate(records[j]['boxes'])]
+            overlap, k = max(matches, default=(0, -1))
+            if overlap < .8:
+                continue
+            prior_hist = np.asarray(records[j]['appearances'][k], dtype=np.float32)
+            if cv2.compareHist(np.asarray(seed_appearance, dtype=np.float32), prior_hist,
+                               cv2.HISTCMP_BHATTACHARYYA) <= .5:
+                agreed = True
+                break
+        if not agreed:
+            continue
+        for j in range(start, end):
+            recovered = reverse[j-left]
+            output[j] = dict(bbox_xyxy=recovered['bbox_xyxy'], track_state='tracked',
+                             diagnostics={**recovered['diagnostics'],
+                                          'reason': 'bidirectional_recovered_after_occlusion',
+                                          'backward_association_reason': recovered['diagnostics']['reason']})
     return output

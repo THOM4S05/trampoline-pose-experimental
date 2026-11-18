@@ -129,6 +129,38 @@ def test_auth_host_csrf_and_security_headers(portal):
     assert client.get('/api/jobs', base_url=BASE).status_code == 401
 
 
+def test_video_names_are_optional_editable_and_persisted(portal):
+    app, client, _ = portal
+    job = request(client, 'POST', '/api/jobs', json={
+        'name': 'original.MOV', 'size': 3, 'display_name': '  Sunday training  '
+    }).json
+    assert job['display_name'] == 'Sunday training'
+    job_id = job['id']
+    store = app.extensions['job_store']
+    original_source = store.source(job)
+    result = request(client, 'PATCH', f'/api/jobs/{job_id}', json={'display_name': 'Final routine / 🏅'})
+    assert result.status_code == 200
+    assert result.json['name'] == 'original.MOV'
+    assert result.json['display_name'] == 'Final routine / 🏅'
+    assert store.source(result.json) == original_source
+    assert json.loads((store.directory(job) / 'job.json').read_text())['display_name'] == 'Final routine / 🏅'
+    restarted = JobStore(store.root, store.config)
+    try:
+        assert restarted.get(job_id)['display_name'] == 'Final routine / 🏅'
+    finally:
+        restarted.worker.shutdown()
+    for invalid in [None, 42, [], 'x' * 241]:
+        assert request(client, 'PATCH', f'/api/jobs/{job_id}', json={'display_name': invalid}).status_code == 400
+    assert request(client, 'PATCH', f'/api/jobs/{job_id}', json={}).status_code == 400
+    assert request(client, 'PATCH', f'/api/jobs/{job_id}', json={'display_name': '  '}).json['display_name'] == ''
+    # Old entries without the optional field remain readable and renameable.
+    del store.jobs[job_id]['display_name']
+    assert request(client, 'GET', f'/api/jobs/{job_id}').json['name'] == 'original.MOV'
+    assert request(client, 'PATCH', f'/api/jobs/{job_id}', json={'display_name': 'Old clip'}).json['display_name'] == 'Old clip'
+    stranger = app.test_client()
+    assert request(stranger, 'PATCH', f'/api/jobs/{job_id}', json={'display_name': 'No'}).status_code == 401
+
+
 def test_private_https_cookie_and_origin(tmp_path):
     app = create_app(tmp_path, public_url='https://dorm.example.ts.net')
     client = app.test_client()
@@ -159,6 +191,28 @@ def test_upload_limits_partial_and_safe_retry(portal):
     assert not app.extensions['job_store'].directory(job).exists()
 
 
+def test_preview_buffer_available_before_preparation_finishes(portal, monkeypatch):
+    app, client, _ = portal
+    store = app.extensions['job_store']
+    job = store.create({'name': 'buffer.mp4', 'size': 1})
+    store.update(job, state='preparing')
+    import trampoline_pose.video as video
+    monkeypatch.setattr(video, 'probe', lambda _: dict(display_width=96, display_height=80, declared_frame_count=2))
+    def frames(*args, **kwargs):
+        yield {'frame_index': 0, 'timestamp_seconds': 0.}, np.zeros((80, 96, 3), np.uint8)
+        detail = request(client, 'GET', f"/api/jobs/{job['id']}").json
+        assert detail['state'] == 'preparing'
+        assert detail['frame_count'] == 1 and detail['timestamps'] == [0.]
+        assert request(client, 'GET', f"/api/jobs/{job['id']}/frames/0.jpg").status_code == 200
+        assert request(client, 'GET', f"/api/jobs/{job['id']}/frames/1.jpg").status_code == 404
+        assert request(client, 'POST', f"/api/jobs/{job['id']}/run", json={'frame_index':0,'bbox_xyxy':[10,10,40,60]}).status_code == 409
+        yield {'frame_index': 1, 'timestamp_seconds': .04}, np.zeros((80, 96, 3), np.uint8)
+    monkeypatch.setattr(video, 'decode', frames)
+    store.prepare(job)
+    assert job['state'] == 'ready' and job['frame_count'] == 2
+    assert job['preparation_complete'] is True
+
+
 def test_vfr_preview_selection_and_outputs(portal):
     app, client, tmp = portal
     job_id = uploaded(portal)
@@ -186,7 +240,20 @@ def test_vfr_preview_selection_and_outputs(portal):
     assert request(client,'GET',f'/api/jobs/{job_id}/results/joints.csv').status_code==200
     response=request(client,'GET',f'/api/jobs/{job_id}/results/overlay.mp4')
     assert response.status_code==200
+    assert response.headers['Cache-Control'] == 'private, no-cache'
+    etag = response.headers['ETag']
     response.close()
+    route = f'/api/jobs/{job_id}/results/overlay.mp4'
+    partial = client.get(route, headers={**ORIGIN, 'Range':'bytes=0-15'}, base_url=BASE)
+    assert partial.status_code == 206 and len(partial.data) == 16
+    assert partial.headers['Cache-Control'] == 'private, no-cache'
+    cached = client.get(route, headers={**ORIGIN, 'If-None-Match':etag}, base_url=BASE)
+    assert cached.status_code == 304 and not cached.data
+    assert cached.headers['Cache-Control'] == 'private, no-cache'
+    anonymous = app.test_client().get(route, headers={'If-None-Match':etag}, base_url=BASE)
+    assert anonymous.status_code == 401 and anonymous.headers['Cache-Control'] == 'no-store'
+    lightweight = request(client, 'GET', f'/api/jobs/{job_id}?frames=0').json
+    assert lightweight['frame_count'] == 4 and 'timestamps' not in lightweight
     assert request(client,'GET',f'/api/jobs/{job_id}/results/source.mp4').status_code==404
 
 
@@ -215,6 +282,7 @@ def test_skill_analysis_page_runs_locally_and_persists(portal):
     assert request(client, 'GET', f'/api/jobs/{job_id}/results/skills.csv').status_code == 200
     saved = request(client, 'GET', f'/api/jobs/{job_id}/results/skills.json').json
     assert saved['result_schema_version'] == '0.1.0'
+    assert all('time_of_flight_seconds' in skill and 'time_of_flight' in skill for skill in saved['skills'])
     assert request(client, 'GET', f'/api/jobs/{job_id}/results/comparison.json').status_code == 404
     recovered = JobStore(store.root, store.config)
     assert recovered.jobs[job_id]['analysis']['state'] == 'done'

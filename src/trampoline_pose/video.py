@@ -74,7 +74,8 @@ class VideoWriter:
     def __init__(self,path,width,height,rate='30/1'):
         self.path=Path(path)
         self.path.parent.mkdir(parents=True,exist_ok=True)
-        self.container=av.open(str(self.path),mode='w')
+        options = {'movflags': '+faststart'} if self.path.suffix.lower() == '.mp4' else {}
+        self.container=av.open(str(self.path),mode='w',options=options)
         try:
             fps=Fraction(rate)
             if fps <= 0:

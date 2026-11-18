@@ -130,7 +130,10 @@ def rotation_evidence(t, shoulder, hip, facing, max_gap, clipped):
         neighbours = np.r_[before, after]
         speeds_before, speeds_after = delta[before] / dt[before], delta[after] / dt[after]
         sign = np.sign(np.median(speeds_before))
-        near_inversion = min(abs(th[i]), abs(th[i + 1])) > np.pi / 3
+        # A folded pike can hide torso joints while the torso is only about
+        # 45 degrees from upright. Coherent motion on both sides and a unique
+        # short arc are still required before bridging that evidence gap.
+        near_inversion = min(abs(th[i]), abs(th[i + 1])) > np.pi / 4
         coherent = accepted[neighbours].all() and all(
             np.median(speeds) * sign > .5
             and np.sum(np.maximum(-speeds * sign, 0) * dt[indices]) <= .2
@@ -368,7 +371,23 @@ def seat_skill_evidence(frames, start, end, rotation, clipped=False):
     count = .5 if first != last else 0
     result['twist_count'] = count
     result['name'] = ('Half twist to seat' if count else 'Seat drop') if landing == 'seat' else ('Half twist from seat to feet' if count else 'Return from seat to feet')
+    # Keep the legacy fields for saved consumers; neither is supported twist.
+    result['candidate_twist_count'] = count
+    result['candidate_name'] = result['name']
+    result['evidence_policy'] = 'tentative_only'
     result['reasons'].append('2d_facing_cannot_exclude_hidden_twists')
+    return result
+
+
+def add_flight_times(data, result, settings=Settings()):
+    """Pose-only analysis cannot establish contact: require source-video evidence."""
+    for skill in result["skills"]:
+        evidence = dict(seconds=None, takeoff_seconds=None, landing_seconds=None,
+                        status='unavailable', method='visible_bed_deformation',
+                        reasons=['source_video_required'])
+        skill["time_of_flight"] = evidence
+        skill["time_of_flight_seconds"] = None
+        skill["landing_contact"] = None
     return result
 
 
@@ -548,7 +567,7 @@ def analyze(data, settings=Settings(), facing_override=None):
                                         joint_statuses=dict(Counter(j["status"] for f in selected for j in f["joints"].values())),
                                         joint_flags=dict(Counter(flag for f in selected for j in f["joints"].values() for flag in j["flags"])),
                                         side_policy="pair centres invariant to anatomical left/right swaps; local misassociation remains possible")))
-    return dict(result_schema_version="0.1.0", source_sha256=data.get("source", {}).get("sha256"),
+    result = dict(result_schema_version="0.1.0", source_sha256=data.get("source", {}).get("sha256"),
                 timing=dict(source_pts_checked=pts_checked, first_timestamp_seconds=float(t[0]),
                             last_timestamp_seconds=float(t[-1]),
                             median_frame_period_seconds=float(np.median(np.diff(t))),
@@ -566,6 +585,8 @@ def analyze(data, settings=Settings(), facing_override=None):
                              "Boundary uncertainty intervals are heuristic, not confidence intervals.",
                              "Inferred, missing, uncertain-track and crop-edge joints excluded; only short gaps interpolated.",
                              "No twist or definitive intended-skill identification; horizontal rebound brackets are experimental and require review."])
+    from .difficulty import attach_difficulty
+    return attach_difficulty(add_flight_times(data, result, settings))
 
 
 def compare(result, labels_path, boundaries_path=None):
@@ -647,16 +668,23 @@ def main(argv=None):
     parser.add_argument("--labels", type=Path)
     parser.add_argument("--boundaries", type=Path)
     parser.add_argument("--facing", choices=["left", "right"])
+    parser.add_argument("--video", type=Path, help="Matching source video for bed-contact timing")
     args = parser.parse_args(argv)
     try:
         data = json.loads(args.input.read_text(encoding="utf-8"))
         result = analyze(data, facing_override=args.facing)
+        if args.video:
+            from .bed_contact import add_bed_contact_times
+            add_bed_contact_times(data, result, args.video)
         comparison = compare(result, args.labels, args.boundaries) if args.labels else None
         args.output_dir.mkdir(parents=True, exist_ok=True)
         (args.output_dir / "skills.json").write_text(json.dumps(result, indent=2, allow_nan=False), encoding="utf-8")
-        rows = [{k: s[k] for k in ("skill_index", "start_frame", "end_frame", "start_seconds", "end_seconds", "start_clipped", "end_clipped", "supplied_skill_identity", "predicted_skill_identity", "review_status")}
+        rows = [{k: s[k] for k in ("skill_index", "start_frame", "end_frame", "start_seconds", "end_seconds", "start_clipped", "end_clipped", "supplied_skill_identity", "predicted_skill_identity", "review_status", "time_of_flight_seconds", "time_of_flight", "landing_contact")}
                 | {"rotation_" + k if k == "reasons" else k: v for k, v in s["rotation"].items()}
-                | {"shape_" + k if k == "reasons" else k: v for k, v in s["execution"].items()} for s in result["skills"]]
+                | {"shape_" + k if k == "reasons" else k: v for k, v in s["execution"].items()}
+                | {"difficulty_value": s["difficulty"]["value"], "difficulty_status": s["difficulty"]["status"],
+                   "difficulty_breakdown": s["difficulty"]["components"], "difficulty_reasons": s["difficulty"]["reasons"]}
+                for s in result["skills"]]
         write_csv(args.output_dir / "skills.csv", rows)
         if comparison:
             (args.output_dir / "comparison.json").write_text(json.dumps(comparison, indent=2, allow_nan=False), encoding="utf-8")

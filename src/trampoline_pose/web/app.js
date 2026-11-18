@@ -12,16 +12,16 @@ async function api(path, options={}) {
   if (!response.ok) { if(response.status === 401) lock(); throw new Error(data.error || 'Request failed'); }
   return data;
 }
-function lock() { window.skillAnalysis.clear(); state.locked = true; state.request++; state.ready=false; state.job=null; state.jobs=[]; $('job-list').replaceChildren(); $('result-video').removeAttribute('src'); $('result-video').load(); $('workspace').hidden=true; $('logout').hidden=true; $('login-panel').hidden=false; }
+function lock() { window.skillAnalysis.clear(); state.locked = true; state.request++; state.ready=false; state.job=null; state.jobs=[]; $('job-list').replaceChildren(); window.reviewVideo.clear(); $('workspace').hidden=true; $('logout').hidden=true; $('login-panel').hidden=false; }
 function unlock() { state.locked=false; $('login-panel').hidden=true; $('workspace').hidden=false; $('logout').hidden=false; }
-function editable() { return state.job && ['ready','error'].includes(state.job.state); }
+function editable() { return state.job && state.job.frame_count > 0 && ['preparing','ready','error'].includes(state.job.state); }
 function validBox() { const b=state.box, j=state.job; return b && j && b.every(Number.isFinite) && b[0]>=0 && b[1]>=0 && b[2]<=j.width && b[3]<=j.height && b[2]-b[0]>=4 && b[3]-b[1]>=4; }
 function selection() { return {frame_index:state.frame,bbox_xyxy:state.box}; }
 function draftKey() { return 'flightroom-selection-' + state.job.id; }
 function saveDraft() { if(state.job) try { localStorage.setItem(draftKey(),JSON.stringify(selection())); } catch {} }
 function updateControls(syncCoordinates=true) {
   const can=editable();
-  $('start-processing').disabled=!(can && state.ready && validBox());
+  $('start-processing').disabled=!(can && state.job.state!=='preparing' && state.job.preparation_complete!==false && state.ready && validBox());
   for(const id of ['clear-box','corner-mode','apply-box']) $(id).disabled=!can || !state.ready;
   $('frame-slider').disabled=!can; $('frame-number').disabled=!can;
   $('previous-frame').disabled=!can || state.frame<=0;
@@ -122,23 +122,29 @@ function renderList() {
   $('job-count').textContent=state.jobs.length;$('empty-list').hidden=!!state.jobs.length;
   $('job-list').replaceChildren(...state.jobs.map(job=>{
     const button=document.createElement('button');button.className='job-card'+(job.id===state.job?.id?' selected':'');
-    const name=document.createElement('strong');name.textContent=job.name;
+    const name=document.createElement('strong');name.textContent=job.display_name || job.name;
     const status=document.createElement('span');status.textContent=`${labels[job.state]} · ${(job.size/1024**2).toFixed(1)} MB`;
     button.append(name,status);button.onclick=()=>openJob(job.id).catch(e=>notice(e.message));return button;
   }));
 }
 function renderStatus() {
   const j=state.job;if(!j)return;
-  $('video-name').textContent=j.name;$('job-state').textContent=labels[j.state];
+  $('video-name').textContent=j.display_name || j.name;$('job-state').textContent=labels[j.state];
+  $('video-filename').textContent=`File: ${j.name} · Leave the name blank to use the file name.`;
+  const total=Math.max(j.frame_count, j.expected_frame_count || 0);
+  $('frame-buffer').max=total || 1;$('frame-buffer').value=j.frame_count;
+  $('frame-buffer-status').textContent=j.state==='preparing' ? `${j.frame_count} frames buffered${j.expected_frame_count ? ' / '+total : ''} · You can select a buffered frame while the rest loads.` : (j.preparation_complete===false ? 'Buffer incomplete · retry preparing frames.' : 'All frames buffered');
+  $('frame-slider').max=Math.max(0,total-1);$('frame-number').max=j.frame_count;
+  $('frame-total').textContent=`/ ${total || j.frame_count}`;
   $('job-status').textContent=j.progress ? `${j.progress.stage} · ${j.progress.completed}${j.progress.total ? ' / '+j.progress.total : ''} frames` : j.message;
   $('job-progress').hidden=!['preparing','queued','processing'].includes(j.state);
   if(j.progress?.total) {$('job-progress').max=j.progress.total;$('job-progress').value=j.progress.completed;} else $('job-progress').removeAttribute('value');
-  $('resume-panel').hidden=j.state!=='uploading' || state.uploading;$('retry-prepare').hidden=!(j.state==='error' && !j.frame_count);
+  $('resume-panel').hidden=j.state!=='uploading' || state.uploading;$('retry-prepare').hidden=!(j.state==='error' && (!j.frame_count || j.preparation_complete===false));
   $('selection-panel').hidden=!j.frame_count || j.state==='done';$('results-panel').hidden=j.state!=='done';
   $('delete-job').disabled=['preparing','queued','processing'].includes(j.state) || state.uploading;
   if(j.state==='done') {
     const base=`/api/jobs/${j.id}/results/`;
-    if($('result-video').getAttribute('src')!==base+'overlay.mp4') $('result-video').src=base+'overlay.mp4';
+    window.reviewVideo.setSource(base+'overlay.mp4');
     $('download-video').href=base+'overlay.mp4?download=1';$('download-json').href=base+'joints.json';$('download-csv').href=base+'joints.csv';
   }
   updateControls(false);
@@ -146,15 +152,17 @@ function renderStatus() {
 async function openJob(id) {
   window.skillAnalysis.clear();
   clearTimeout(frameTimer);const version=++state.request;state.ready=false;
-  const job=await api('/jobs/'+id);
+  const summary=state.jobs.find(job=>job.id===id);
+  if(summary?.state==='done') window.reviewVideo.setSource(`/api/jobs/${id}/results/overlay.mp4`);
+  const job=await api('/jobs/'+id+(summary?.state==='done' ? '?frames=0' : ''));
   if(version!==state.request)return;
   state.job=job;state.box=null;state.image=null;state.frame=0;state.anchor=null;
+  $('edit-video-name').value=job.display_name || '';
   $('empty-editor').hidden=true;$('job-editor').hidden=false;
-  $('result-video').removeAttribute('src');$('result-video').load();
+  if(job.state!=='done') window.reviewVideo.clear();
   renderStatus();renderList();
   await window.skillAnalysis.select(job);
   if(job.frame_count && job.state!=='done') {
-    $('frame-slider').max=job.frame_count-1;$('frame-number').max=job.frame_count;$('frame-total').textContent=`/ ${job.frame_count}`;
     let selected=job.selection;
     if(editable()) {try {selected=JSON.parse(localStorage.getItem(draftKey())) || selected;} catch {}}
     if(selected && Number.isInteger(selected.frame_index) && selected.frame_index>=0 && selected.frame_index<job.frame_count) {state.frame=selected.frame_index;state.box=selected.bbox_xyxy; if(!Array.isArray(state.box)||state.box.length!==4||!validBox())state.box=null;}
@@ -167,7 +175,14 @@ async function refresh() {
     const data=await api('/jobs');if(state.locked)unlock();state.jobs=data.jobs;renderList();
     if(state.job) {
       const latest=state.jobs.find(j=>j.id===state.job.id);
-      if(!latest) {window.skillAnalysis.clear();$('result-video').removeAttribute('src');$('result-video').load();state.job=null;state.request++;$('job-editor').hidden=true;$('empty-editor').hidden=false;}
+      if(!latest) {window.skillAnalysis.clear();window.reviewVideo.clear();state.job=null;state.request++;$('job-editor').hidden=true;$('empty-editor').hidden=false;}
+      else if(state.job.state==='preparing' && ['preparing','ready'].includes(latest.state)) {
+        const hadFrames=state.job.frame_count>0;
+        const detail=await api('/jobs/'+latest.id);
+        if(state.job?.id!==latest.id)return;
+        Object.assign(state.job,detail);renderStatus();
+        if(!hadFrames && detail.frame_count) await loadFrame(0,true);
+      }
       else if(latest.state!==state.job.state) await openJob(latest.id);
       else {Object.assign(state.job,latest);renderStatus();await window.skillAnalysis.select(state.job);}
     }
@@ -175,13 +190,26 @@ async function refresh() {
 }
 $('login-form').onsubmit=async event=>{event.preventDefault();try{await api('/login',{method:'POST',body:JSON.stringify({key:$('access-key').value.trim()})});$('access-key').value='';unlock();await refresh();}catch(e){notice(e.message);}};
 $('logout').onclick=async()=>{try{await api('/logout',{method:'POST'});lock();}catch(e){notice(e.message);}};
+$('video-name-form').onsubmit=async event=>{
+  event.preventDefault();const job=state.job;if(!job)return;
+  const input=$('edit-video-name'), value=input.value;
+  $('save-video-name').disabled=true;
+  try {
+    const saved=await api(`/jobs/${job.id}`,{method:'PATCH',body:JSON.stringify({display_name:value})});
+    const listed=state.jobs.find(item=>item.id===job.id);if(listed)listed.display_name=saved.display_name;
+    if(state.job?.id===job.id) {state.job.display_name=saved.display_name;if(input.value===value)input.value=saved.display_name;renderStatus();}
+    renderList();notice('Video name saved.');
+  } catch(e) {notice(e.message);}
+  finally {$('save-video-name').disabled=false;}
+};
 
 async function uploadFile(file) {
   if(!file || state.uploading)return;
-  state.uploading=true;$('file-input').disabled=true;$('upload-progress').hidden=false;$('upload-bar').value=0;$('upload-message').textContent=`Starting upload of ${file.name}…`;
+  state.uploading=true;$('file-input').disabled=true;$('files-input').disabled=true;$('upload-progress').hidden=false;$('upload-bar').value=0;$('upload-message').textContent=`Starting upload of ${file.name}…`;
   let job;
   try {
-    job=await api('/jobs',{method:'POST',body:JSON.stringify({name:file.name,size:file.size})});
+    job=await api('/jobs',{method:'POST',body:JSON.stringify({name:file.name,size:file.size,display_name:$('upload-name').value})});
+    $('upload-name').value='';
     await refresh();await openJob(job.id);
     const size=8*1024*1024;
     for(let offset=0;offset<file.size;) {
@@ -193,10 +221,11 @@ async function uploadFile(file) {
       offset=data.offset;const percent=Math.round(offset/file.size*100);$('upload-bar').value=percent;$('upload-message').textContent=`Uploading ${file.name} · ${percent}%`;
     }
     await api(`/jobs/${job.id}/finish`,{method:'POST'});$('upload-message').textContent='Upload complete. Wait for frames to load, then select the gymnast.';await refresh();
-  } catch(e) {notice(e.message);$('upload-message').textContent='Upload stopped. Choose the same file to start a new upload, then delete the unfinished entry.';}
-  finally {state.uploading=false;$('file-input').disabled=false;$('file-input').value='';if(state.job)renderStatus();}
+  } catch(e) {notice(e.message);$('upload-message').textContent=`Upload stopped: ${e.message}. Choose the video again to retry, or use Choose from files instead.${job ? ' Delete the unfinished entry from Your videos.' : ''}`;}
+  finally {state.uploading=false;for(const id of ['file-input','files-input']) {$(id).disabled=false;$(id).value='';}if(state.job)renderStatus();}
 }
 $('file-input').onchange=e=>uploadFile(e.target.files[0]);
+$('files-input').onchange=e=>uploadFile(e.target.files[0]);
 for(const event of ['dragenter','dragover']) $('drop-zone').addEventListener(event,e=>{e.preventDefault();$('drop-zone').classList.add('dragging');});
 for(const event of ['dragleave','drop']) $('drop-zone').addEventListener(event,e=>{e.preventDefault();$('drop-zone').classList.remove('dragging');});
 $('drop-zone').addEventListener('drop',e=>{if(e.dataTransfer.files.length>1)notice('Upload one video at a time.');uploadFile(e.dataTransfer.files[0]);});
@@ -209,7 +238,7 @@ $('start-processing').onclick=async()=>{
 $('retry-prepare').onclick=async()=>{try{await api(`/jobs/${state.job.id}/prepare`,{method:'POST'});await refresh();}catch(e){notice(e.message);}};
 $('delete-job').onclick=async()=>{
   const job=state.job;
-  if(!confirm(`Delete “${job.name}” and its results from the processing PC? Your original file on the sending device is not affected.`))return;
+  if(!confirm(`Delete “${job.display_name || job.name}” and its results from the processing PC? Your original file on the sending device is not affected.`))return;
   try {await api(`/jobs/${job.id}`,{method:'DELETE'});localStorage.removeItem('flightroom-selection-'+job.id);await refresh();}catch(e){notice(e.message);}
 };
 refresh().catch(()=>{});
