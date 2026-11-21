@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Flightroom · Experimental review</title>
+  <link rel="stylesheet" href="./assets/style.css">
+  <link rel="stylesheet" href="./assets/skills.css">
+  <link rel="stylesheet" href="./assets/viewer.css">
+  <meta name="description" content="Explore preloaded trampoline videos, skeleton tracking and experimental skill analysis.">
+  <script src="./assets/viewer-data.js" defer></script>
+  <script src="./assets/video-player.js" defer></script>
+  <script src="./assets/orientation-dial.js" defer></script>
+  <script src="./assets/skills.js" defer></script>
+</head>
+<body>
+  <header><a class="brand" href="./" aria-label="Flightroom home"><span class="mark">F</span> flightroom<span class="brand-note">EXPERIMENTAL REVIEW</span></a><div class="header-right"><a class="quiet" href="#review-help">How to explore</a><span class="private"><span class="dot"></span>Preloaded demo</span></div></header>
+  <main>
+    <p class="hint" role="note"><strong>Experimental analysis.</strong> These saved estimates need video review. Explore the skeleton tracking, body shape and twist evidence for each flight.</p>
+    <section id="workspace">
+      <div class="intro"><div><span class="eyebrow">SKILL ESTIMATES</span><h1>Skill Analysis</h1><p>Explore preloaded videos, skeletons and saved analysis. Choose a clip to get started.</p></div><span class="pill">Estimates require review</span></div>
+      <div class="layout">
+        <aside class="panel skill-picker"><h2>Video library</h2><p class="small">Saved videos with skeleton tracking and experimental analysis.</p><div id="job-list"></div><p id="empty-list" class="small" hidden>No videos have been published in this collection yet.</p></aside>
+        <section class="panel skill-main"><div id="empty-selection"><h2>Choose a video</h2><p>Select a video from the library to explore its saved results.</p></div><div id="analysis-panel" hidden><div class="editor-heading"><h2 id="video-name"></h2></div><div id="video-player" class="video-player"><video id="result-video" controls playsinline preload="metadata" aria-label="Tracking video"></video>
+              <div id="video-controls" class="video-controls" hidden>
+                <button id="video-play" type="button" aria-label="Play video">▶</button>
+                <span id="video-time" class="video-time">0:00 / 0:00</span>
+                <div class="video-seek-track">
+                  <input id="skill-seek" type="range" min="0" max="1" step="0.001" value="0" aria-label="Seek video">
+                  <div id="skill-markers" class="skill-markers" aria-hidden="true"></div>
+                </div>
+                <select id="video-speed" aria-label="Playback speed"><option value="1">1×</option><option value="0.75">0.75×</option><option value="0.5">0.5×</option><option value="0.25">0.25×</option><option value="0.1">0.1×</option></select>
+                <button id="video-mute" type="button" aria-label="Mute video">Mute</button>
+                <button id="video-fullscreen" type="button" aria-label="Enter fullscreen">⛶</button>
+              </div>
+            </div>
+            <section id="orientation-panel" class="orientation-panel" aria-label="Current gymnast orientation" title="Green arrow: towards shoulders. Orange half-length arrow: towards hips; fine line extends to the rim." hidden>
+              <svg id="orientation-dial" class="orientation-dial" viewBox="0 0 100 100" role="img" aria-label="Loading orientation">
+                <circle class="orientation-ring" cx="50" cy="50" r="42"/>
+                <path class="orientation-ticks" d="M50 8v5 M71 13.6l-2.5 4.3 M86.4 29l-4.3 2.5 M92 50h-5 M86.4 71l-4.3-2.5 M71 86.4l-2.5-4.3 M50 92v-5 M29 86.4l2.5-4.3 M13.6 71l4.3-2.5 M8 50h5 M13.6 29l4.3 2.5 M29 13.6l2.5 4.3"/>
+                <g id="orientation-needle" style="visibility:hidden">
+                  <path class="orientation-hand orientation-hand-long" d="M50 50V19 M44 26l6-7 6 7"/>
+                  <path class="orientation-guide" d="M50 65.5V92"/>
+                  <path class="orientation-hand orientation-hand-short" d="M50 50v15.5 M47 62l3 3.5 3-3.5"/>
+                </g>
+                <circle class="orientation-centre" cx="50" cy="50" r="3"/>
+              </svg>
+            </section><div class="video-skill-actions"><button id="jump-current-analysis" class="secondary" type="button" disabled>Jump to skill analysis</button><button id="jump-current-tightest" class="primary" type="button" disabled>Jump to tightest point</button><div class="video-frame-buttons"><button id="video-prev-frame" class="secondary" type="button" aria-label="Previous frame" title="Previous frame · Left Arrow">−1 frame</button><button id="video-next-frame" class="secondary" type="button" aria-label="Next frame" title="Next frame · Right Arrow">+1 frame</button><span id="video-frame-status" class="small" aria-live="polite">Frame —</span></div><span id="current-skill-label" class="small" aria-live="polite"></span></div><div class="editor-heading"><h2>Skill analysis</h2><span id="analysis-state" class="pill"></span></div><p id="analysis-message" class="status" role="status" aria-live="polite"></p><div id="analysis-results" hidden><p class="hint">Select Jump to skill to see its start in the video. Review each flight’s estimated rotation and body shape. Check the tracking and estimated trampoline contact times; the intended skill is not confirmed.</p><div class="downloads"><a id="download-skills-json" class="secondary">Download skills (JSON)</a><a id="download-skills-csv" class="secondary">Download skills (CSV)</a></div><div id="skill-list" class="skill-list"></div></div></div></section>
+      </div>
+    </section>
+    <details id="review-help" class="panel review-help"><summary>How to explore</summary><p>Choose a clip from the library. Use the timeline and playback speed to inspect the skeleton tracking. Step one frame at a time with the buttons or Left / Right arrow keys. Each skill card lets you jump to its start, landing, tightest shape or detected twist passage. The dial follows the gymnast’s torso orientation.</p><p>All results are saved snapshots. This viewer does not upload videos or run analysis. Your review controls affect only this browser.</p></details>
+    <div id="notice" role="alert" hidden></div>
+  </main>
+  <footer>FLIGHTROOM <span>Trampoline video tracking</span></footer>
+</body>
+</html>

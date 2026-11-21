@@ -1,0 +1,4 @@
+flight,start_seconds,end_seconds,somersault_quarters,shape,candidate_twists,difficulty
+1,,1.3566666666666667,,straight_like,,
+2,1.3566666666666667,2.99,4,straight_like,,0.6
+3,2.99,,,straight_like,,
