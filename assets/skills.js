@@ -521,6 +521,14 @@ async function refresh() {
   if (jobs.length) await selectJob(jobs[0].id);
 }
 $('result-video').addEventListener('error', () => notice('This video could not load. Choose another clip or reload the page.'));
+$('result-video').addEventListener('playing', () => {
+  if (embedded || !window.flightroomAnalytics) return;
+  const video = $('result-video');
+  const job = jobs.find(item => item.id === selectedId);
+  if (job && !video.paused && video.getAttribute('src') === window.viewerData.asset(job.id, 'overlay.mp4')) {
+    window.flightroomAnalytics.videoView(job.id);
+  }
+});
 refresh().catch(error => {
   $('empty-list').hidden = false;
   $('empty-list').textContent = 'The video library could not load. Please try reloading the page.';
